@@ -1,0 +1,54 @@
+# Folder hasil proses & output (WAJIB!)
+output/
+cache/
+*.log
+worker.log
+
+# Virtual environment (jangan pernah di-push!)
+venv/
+env/
+.venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+
+# Node.js (kalau ada frontend di repo yang sama)
+node_modules/
+dist/
+build/
+
+# OS & lainnya
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Optional: folder model Whisper kalau besar (bisa di-download otomatis)
+models/
+*.bin
+*.pt

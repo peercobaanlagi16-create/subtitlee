@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+requests
+pysubs2
+deep-translator
+faster-whisper==1.0.0
+numpy<=2.0
+ffmpeg-python
+yt-dlp
+libretranslatepy
