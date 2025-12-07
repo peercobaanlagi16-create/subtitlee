@@ -4,7 +4,6 @@ python-dotenv
 requests
 pysubs2
 deep-translator
-faster-whisper==0.10.0
 numpy<=2.0
 ffmpeg-python
 yt-dlp
