@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.10-bullseye
 
 # Install system dependencies required for PyAV, Faster-Whisper & FFmpeg
 RUN apt-get update && apt-get install -y \
