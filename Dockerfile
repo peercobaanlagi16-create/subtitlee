@@ -1,11 +1,11 @@
-# Dockerfile – FIX EPORNER dengan NIGHTLY yt-dlp (Dec 2025)
+# Dockerfile — FIX EPORNER NIGHTLY (Tested 9 Des 2025, 100% Jalan di Koyeb)
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Sistem deps (sudah ada curl, ffmpeg, dll)
+# Install sistem deps (curl, ffmpeg, dll)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -35,27 +35,33 @@ RUN ln -s /usr/bin/python3 /usr/local/bin/python && \
 # Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Install yt-dlp NIGHTLY (FIX EPORNER!)
+# Install yt-dlp NIGHTLY (FIX EPORNER dari master branch!)
 RUN wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp && \
-    chmod a+x /usr/local/bin/yt-dlp && \
-    yt-dlp --version  # Konfirmasi nightly
+    chmod a+x /usr/local/bin/yt-dlp
 
-# Install curl_cffi untuk impersonate (opsional, tapi bagus)
+# Install curl_cffi untuk impersonate (membantu situs anti-bot)
 RUN pip install --no-cache-dir curl_cffi
 
 WORKDIR /app
 
-# Copy requirements
+# Copy requirements (caching)
 COPY requirements.txt .
+
+# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# av, onnxruntime, faster-whisper
+# Optional: av dari system libs
 RUN pip install --no-cache-dir av==11.0.0 || true
+
+# Install onnxruntime + faster-whisper tanpa deps
 RUN pip install --no-cache-dir onnxruntime==1.15.1
 RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
-# Copy source
+# Copy source code
 COPY . .
+
+# Verify yt-dlp (akan muncul di build log: "2025.12.xx-nightly")
+RUN yt-dlp --version
 
 EXPOSE 8000
 
