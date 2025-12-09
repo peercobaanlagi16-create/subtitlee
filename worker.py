@@ -100,10 +100,15 @@ def find_downloaded_video(job_dir):
 def download_eporner_direct(url):
     video_path = os.path.join(JOB_DIR, "video.mp4")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+    headers = {
+        "User-Agent": ua,
+        "Referer": url,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Origin": "https://www.eporner.com"
+    }
 
     update("downloading", "Manual scrape Eporner JSON-LD with cookies...")
     try:
-        headers = {"User-Agent": ua, "Referer": url}
         session = requests.Session()
         if COOKIES_PATH:
             with open(COOKIES_PATH, 'r') as f:
@@ -119,58 +124,58 @@ def download_eporner_direct(url):
             logging.error(f"Page load failed: {resp.status_code}")
             return None
 
-        # Extract JSON-LD script
-        json_match = re.search(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', resp.text, re.DOTALL | re.IGNORECASE)
-        if not json_match:
-            logging.error("No JSON-LD script found")
-            return None
+        # Coba cari JSON-LD dengan regex lebih fleksibel
+        json_match = re.search(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', resp.text, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            data = json.loads(json_match.group(1))
+            sources = []
+            def extract_sources(obj):
+                if isinstance(obj, dict):
+                    if obj.get("@type") == "VideoObject":
+                        sources.extend(obj.get("contentUrl", []))
+                    for v in obj.values():
+                        extract_sources(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        extract_sources(item)
+            extract_sources(data)
 
-        data = json.loads(json_match.group(1))
-        sources = []
+            if sources:
+                def get_quality(u):
+                    if "1080" in u: return 1080
+                    if "720" in u: return 720
+                    if "480" in u: return 480
+                    return 360
+                sources.sort(key=get_quality, reverse=True)
+                best_url = sources[0]
+                logging.info(f"Best MP4: {best_url[:150]}... (quality: {get_quality(best_url)}p)")
 
-        # Recursive extract contentUrl
-        def extract_sources(obj):
-            if isinstance(obj, dict):
-                if obj.get("@type") == "VideoObject":
-                    sources.extend(obj.get("contentUrl", []))
-                for v in obj.values():
-                    extract_sources(v)
-            elif isinstance(obj, list):
-                for item in obj:
-                    extract_sources(item)
+                cmd = f'yt-dlp -o "{video_path}" "{best_url}" --user-agent "{ua}" --referer "{url}" --retries 10'
+                if COOKIES_PATH:
+                    cmd += f' --cookies "{COOKIES_PATH}"'
+                if run(cmd) == 0 and os.path.getsize(video_path) > 500_000:
+                    return video_path
 
-        extract_sources(data)
-
-        if not sources:
-            logging.error("No MP4 sources in JSON")
-            return None
-
-        # Sort by quality (1080p > 720p > 480p)
-        def get_quality(u):
-            if "1080" in u: return 1080
-            if "720" in u: return 720
-            if "480" in u: return 480
-            return 360
-        sources.sort(key=get_quality, reverse=True)
-        best_url = sources[0]
-        logging.info(f"Best MP4: {best_url[:150]}... (quality: {get_quality(best_url)}p)")
-
-        # Download with yt-dlp + cookies
-        cmd = f'yt-dlp -o "{video_path}" "{best_url}" --user-agent "{ua}" --referer "{url}" --retries 10'
-        if COOKIES_PATH:
-            cmd += f' --cookies "{COOKIES_PATH}"'
-        if run(cmd) == 0 and os.path.getsize(video_path) > 500_000:
-            logging.info("EPORNER SUCCESS with JSON scrape!")
-            return video_path
+        # Fallback: Cari tag <video> atau source lain
+        video_match = re.search(r'<video[^>]*data-video-url=["\'](.*?)["\']', resp.text, re.DOTALL | re.IGNORECASE)
+        if video_match:
+            best_url = video_match.group(1)
+            logging.info(f"Fallback MP4: {best_url[:150]}...")
+            cmd = f'yt-dlp -o "{video_path}" "{best_url}" --user-agent "{ua}" --referer "{url}" --retries 10'
+            if COOKIES_PATH:
+                cmd += f' --cookies "{COOKIES_PATH}"'
+            if run(cmd) == 0 and os.path.getsize(video_path) > 500_000:
+                return video_path
 
         # Fallback curl
-        curl_cmd = f'curl -L -k --fail --retry 10 --max-time 900 -o "{video_path}" "{best_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
-        if COOKIES_PATH:
-            curl_cmd += f' --cookie-jar "{COOKIES_PATH}"'
-        if run(curl_cmd) == 0 and os.path.getsize(video_path) > 500_000:
-            logging.info("EPORNER SUCCESS with curl fallback!")
-            return video_path
+        if sources or video_match:
+            curl_cmd = f'curl -L -k --fail --retry 10 --max-time 900 -o "{video_path}" "{best_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
+            if COOKIES_PATH:
+                curl_cmd += f' --cookie-jar "{COOKIES_PATH}"'
+            if run(curl_cmd) == 0 and os.path.getsize(video_path) > 500_000:
+                return video_path
 
+        logging.error("No valid video sources found after all attempts")
     except Exception as e:
         logging.error(f"Scrape error: {e}")
     return None
