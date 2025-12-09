@@ -14,12 +14,14 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# upgrade pip & install requirements
+# upgrade pip & install base requirements
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
-# jika pip install faster-whisper di requirements gagal karena dep heavy,
-# kita pastikan onnxruntime dulu, lalu install faster-whisper (no-deps) sebagai fallback:
+# install PyAV explicitly (will use the system libav* via pkg-config)
+RUN pip install --no-cache-dir av==11.0.0
+
+# install onnxruntime + faster-whisper (faster-whisper may import av)
 RUN pip install --no-cache-dir onnxruntime==1.15.1 \
  && pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
