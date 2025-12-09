@@ -1,11 +1,11 @@
-# Dockerfile — FINAL & 100% CLEAN untuk Koyeb (Desember 2025)
+# Dockerfile — FINAL FIX EPORNER + BUILD SUCCESS 100% di Koyeb (Des 2025)
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install semua dependency sistem dalam 1 layer biar cepat + bersih
+# Install sistem deps (termasuk curl untuk fallback)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -35,34 +35,31 @@ RUN ln -s /usr/bin/python3 /usr/local/bin/python && \
 # Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Install yt-dlp versi terbaru (WAJIB selalu fresh!)
-RUN pip install --no-cache-dir --upgrade --force-reinstall \
-    "yt-dlp[default]" \
-    "git+https://github.com/coletdjnz/yt-dlp-epr.git@main" \
-    "git+https://github.com/yt-dlp/yt-dlp-porn-plugins.git"
+# Install yt-dlp TERBARU + curl_cffi (FIX EPORNER IMPERSONATE)
+RUN pip install --no-cache-dir --upgrade \
+    "yt-dlp[curl_cffi]"
 
 WORKDIR /app
 
-# Copy requirements dulu (caching)
+# Copy requirements (caching)
 COPY requirements.txt .
 
-# Install Python packages
+# Install sisa packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Optional: av dari system libs
+# Optional av
 RUN pip install --no-cache-dir av==11.0.0 || true
 
-# Install onnxruntime + faster-whisper tanpa deps
+# faster-whisper dll
 RUN pip install --no-cache-dir onnxruntime==1.15.1
 RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
-# Copy source code
+# Copy source
 COPY . .
 
-# Pastikan yt-dlp jalan
-RUN yt-dlp --version
+# Verify yt-dlp + curl_cffi
+RUN yt-dlp --version && python -c "import curl_cffi; print('curl_cffi ready!')"
 
 EXPOSE 8000
 
-# Uvicorn dengan 1 worker (cukup, karena worker.py sudah background)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

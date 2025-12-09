@@ -98,43 +98,40 @@ def download_video(url):
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
     commands = [
-        # 1. yt-dlp + UA + Referer + retry
-        f'yt-dlp -o "{video_path}" "{url}" --user-agent "{ua}" --referer "{url}" --retries 5 --fragment-retries 15 --no-check-certificate --concurrent-fragments 8',
+        # 1. Dengan impersonate (FIX EPORNER 2025!)
+        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5 --fragment-retries 15 --no-check-certificate --concurrent-fragments 8',
 
-        # 2. Tanpa format selection
-        f'yt-dlp -o "{video_path}" "{url}" --user-agent "{ua}" --referer "{url}" --retries 5',
+        # 2. Tanpa format
+        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5',
 
-        # 3. Force best
-        f'yt-dlp -o "{video_path}" "{url}" -f best --user-agent "{ua}" --referer "{url}"',
+        # 3. Best format
+        f'yt-dlp -o "{video_path}" "{url}" -f best --impersonate chrome --user-agent "{ua}" --referer "{url}"',
 
-        # 4. Header manual
-        f'yt-dlp -o "{video_path}" "{url}" --add-header "Referer:{url}" --add-header "User-Agent:{ua}"',
+        # 4. Headers manual + impersonate
+        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --add-header "Referer:{url}" --add-header "User-Agent:{ua}"',
 
-        # 5. Quiet mode (kadang membantu)
-        f'yt-dlp -o "{video_path}" "{url}" -q --no-warnings --user-agent "{ua}" --referer "{url}"',
+        # 5. Quiet + impersonate
+        f'yt-dlp -o "{video_path}" "{url}" -q --no-warnings --impersonate chrome --user-agent "{ua}" --referer "{url}"',
     ]
 
     for i, cmd_str in enumerate(commands, 1):
-        update("downloading", f"Attempt {i}/{len(commands)} – Downloading video...")
+        update("downloading", f"Attempt {i}/{len(commands)} – Downloading with Chrome impersonate...")
         logging.info(f"Trying method {i}...")
         rc = run(cmd_str)
 
         file = find_downloaded_video(JOB_DIR)
         if file:
-            logging.info(f"SUCCESS! Video downloaded: {file}")
+            logging.info(f"SUCCESS! Video: {file}")
             if file != video_path:
                 os.rename(file, video_path)
             return video_path
-
         time.sleep(3)
 
-    # LAST RESORT: curl (banyak situs kasih direct link .mp4)
-    update("downloading", "Last resort: trying curl direct download...")
+    # Curl fallback (tetap ada)
+    update("downloading", "Fallback: curl direct...")
     curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
-    if run(curl_cmd) == 0:
-        if os.path.exists(video_path) and os.path.getsize(video_path) > 200_000:
-            logging.info("SUCCESS with curl!")
-            return video_path
+    if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
+        return video_path
 
     return None
 
