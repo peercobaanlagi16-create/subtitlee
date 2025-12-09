@@ -7,6 +7,7 @@ import re
 import time
 import glob
 import logging
+import requests  # ← TAMBAH INI untuk manual scrape
 
 import pysubs2
 
@@ -91,44 +92,106 @@ def find_downloaded_video(job_dir):
     return None
 
 # ======================================
-# DOWNLOAD VIDEO – VERSI FINAL 99% SUCCESS (2025)
+# MANUAL EPORNER HASH EXTRACTION (FIX BROKEN EXTRACTOR)
+# ======================================
+def manual_eporner_download(url, video_path, ua):
+    update("downloading", "Manual fallback: Extracting Eporner hash from webpage...")
+    try:
+        headers = {"User-Agent": ua, "Referer": url}
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            logging.error(f"Failed to fetch webpage: {resp.status_code}")
+            return None
+        webpage = resp.text
+
+        # Regex patterns dari yt-dlp source (multiple untuk 2025 structure)
+        patterns = [
+            r'hash\s*[:=]\s*["\']([a-f0-9]{32})["\']',  # Original hash
+            r'"hash"\s*:\s*"([a-f0-9]{32})"',           # JSON hash
+            r'videoHash["\']?\s*:\s*["\']?([a-f0-9]{32})["\']?',  # Video hash var
+            r'id["\']?\s*:\s*["\']?([a-f0-9]{32})["\']?',          # ID fallback
+            r'([a-f0-9]{32})\s*["\']?video["\']?',      # Reverse match
+        ]
+        hash_match = None
+        for pat in patterns:
+            match = re.search(pat, webpage, re.I)
+            if match:
+                hash_match = match.group(1)
+                logging.info(f"Manual hash extracted: {hash_match}")
+                break
+
+        if not hash_match:
+            logging.error("No hash found in webpage")
+            return None
+
+        # Build direct download URL untuk Eporner (free 720p)
+        direct_url = f"https://www.eporner.com/video-{hash_match}/"
+        logging.info(f"Direct URL built: {direct_url}")
+
+        # Download pakai yt-dlp (atau curl kalau gagal)
+        cmd = f'yt-dlp -o "{video_path}" "{direct_url}" --user-agent "{ua}" --referer "{url}" --retries 5 --no-check-certificate'
+        rc = run(cmd)
+        file = find_downloaded_video(JOB_DIR)
+        if file:
+            logging.info("SUCCESS with manual Eporner download!")
+            return file
+
+        # Fallback curl ke direct URL
+        curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{direct_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
+        if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
+            logging.info("SUCCESS with curl fallback!")
+            return video_path
+
+    except Exception as e:
+        logging.error(f"Manual Eporner extraction failed: {e}")
+    return None
+
+# ======================================
+# DOWNLOAD VIDEO – Dengan Manual Fallback untuk Eporner
 # ======================================
 def download_video(url):
     video_path = os.path.join(JOB_DIR, "video.mp4")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
+    # DETECT EPORNER & GUNAKAN MANUAL FALLBACK PERTAMA
+    if "eporner.com" in url:
+        manual_file = manual_eporner_download(url, video_path, ua)
+        if manual_file:
+            return manual_file
+
+    # Kalau bukan Eporner, lanjut ke yt-dlp methods
     commands = [
-        # 1. Dengan impersonate (FIX EPORNER 2025!)
+        # 1. Impersonate + full flags
         f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5 --fragment-retries 15 --no-check-certificate --concurrent-fragments 8',
 
-        # 2. Tanpa format
+        # 2. Basic impersonate
         f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5',
 
         # 3. Best format
         f'yt-dlp -o "{video_path}" "{url}" -f best --impersonate chrome --user-agent "{ua}" --referer "{url}"',
 
-        # 4. Headers manual + impersonate
+        # 4. Headers manual
         f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --add-header "Referer:{url}" --add-header "User-Agent:{ua}"',
 
-        # 5. Quiet + impersonate
+        # 5. Quiet
         f'yt-dlp -o "{video_path}" "{url}" -q --no-warnings --impersonate chrome --user-agent "{ua}" --referer "{url}"',
     ]
 
     for i, cmd_str in enumerate(commands, 1):
-        update("downloading", f"Attempt {i}/{len(commands)} – Downloading with Chrome impersonate...")
-        logging.info(f"Trying method {i}...")
+        update("downloading", f"Attempt {i}/{len(commands)} – yt-dlp method...")
+        logging.info(f"Trying yt-dlp method {i}...")
         rc = run(cmd_str)
 
         file = find_downloaded_video(JOB_DIR)
         if file:
-            logging.info(f"SUCCESS! Video: {file}")
+            logging.info(f"SUCCESS with yt-dlp! Video: {file}")
             if file != video_path:
                 os.rename(file, video_path)
             return video_path
         time.sleep(3)
 
-    # Curl fallback (tetap ada)
-    update("downloading", "Fallback: curl direct...")
+    # Curl fallback (untuk direct MP4 links)
+    update("downloading", "Final fallback: curl direct...")
     curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
     if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
         return video_path
@@ -230,11 +293,9 @@ update("started", "Worker started")
 # Determine final URL
 if is_url:
     raw_url = src.strip()
-    # Jika user kasih URL langsung → pakai langsung
-    # Jika kasih embed iframe → extract src
     final_url = raw_url if raw_url.startswith("http") else extract_src(raw_url)
 else:
-    final_url = src  # dari upload
+    final_url = src
 
 # Download
 if is_url:
