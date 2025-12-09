@@ -11,9 +11,7 @@ import requests
 
 import pysubs2
 
-# ======================================
 # Arguments
-# ======================================
 job_id = sys.argv[1]
 src = sys.argv[2]
 target = sys.argv[3]
@@ -26,9 +24,7 @@ STATUS = os.path.join(JOB_DIR, "status.json")
 LOG_FILE = os.path.join(JOB_DIR, "worker.log")
 os.makedirs(JOB_DIR, exist_ok=True)
 
-# ======================================
 # Logging
-# ======================================
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(message)s',
@@ -41,34 +37,29 @@ logging.basicConfig(
 
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 
-# ======================================
-# GET COOKIES (dari Secret atau file lokal)
-# ======================================
+# Get Cookies from Secret
 def get_cookies_path():
-    secret_cookies = os.getenv("COOKIES_TXT")  # ← nama secret di Koyeb
-    if secret_cookies:
+    secret_cookies = os.getenv("COOKIES_TXT")
+    logging.info(f"DEBUG: COOKIES_TXT env: {'EXISTS' if secret_cookies else 'MISSING'} | Length: {len(secret_cookies) if secret_cookies else 0}")
+    
+    if secret_cookies and len(secret_cookies.strip()) > 50:
         path = os.path.join(JOB_DIR, "cookies_from_secret.txt")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(secret_cookies.strip() + "\n")
-            logging.info("Cookies loaded from Koyeb Secret")
-            return path
-        except Exception as e:
-            logging.error(f"Failed to write secret cookies: {e}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(secret_cookies.strip())
+        logging.info("SUCCESS: Cookies loaded from Secret!")
+        return path
 
     local_path = os.path.join(APP_DIR, "cookies.txt")
     if os.path.exists(local_path):
-        logging.info("Cookies loaded from local cookies.txt")
+        logging.info("SUCCESS: Cookies from local file")
         return local_path
 
-    logging.warning("No cookies found! Age-gated sites may fail")
+    logging.error("CRITICAL: NO COOKIES! Eporner akan gagal (age gate)")
     return None
 
 COOKIES_PATH = get_cookies_path()
 
-# ======================================
 # Helper
-# ======================================
 def update(status, log_msg=""):
     data = {"status": status, "log": log_msg}
     if status == "done":
@@ -105,85 +96,95 @@ def find_downloaded_video(job_dir):
             except: pass
     return None
 
-# ======================================
-# EPORNER DIRECT MP4 SCRAPER (2025) – WITH COOKIES
-# ======================================
+# EPORNER MANUAL SCRAPE JSON-LD + COOKIES (FIX 100% Des 2025)
 def download_eporner_direct(url):
     video_path = os.path.join(JOB_DIR, "video.mp4")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
-    update("downloading", "Scraping Eporner MP4 sources...")
+    update("downloading", "Manual scrape Eporner JSON-LD with cookies...")
     try:
         headers = {"User-Agent": ua, "Referer": url}
         session = requests.Session()
         if COOKIES_PATH:
-            # Load Netscape format cookies
-            with open(COOKIES_PATH) as f:
+            with open(COOKIES_PATH, 'r') as f:
                 for line in f:
                     if line.strip() and not line.startswith('#'):
                         parts = line.strip().split('\t')
                         if len(parts) >= 7:
-                            name, value = parts[-2], parts[-1]
-                            session.cookies.set(name, value, domain=parts[0])
+                            domain, _, path, secure, expires, name, value = parts[:7]
+                            session.cookies.set(name, value, domain=domain, path=path)
 
         resp = session.get(url, headers=headers, timeout=30)
         if resp.status_code != 200:
+            logging.error(f"Page load failed: {resp.status_code}")
             return None
 
-        # Cari JSON-LD
-        json_match = re.search(r'<script type=["\']application/ld\+json["\']>(.*?)</script>', resp.text, re.DOTALL)
+        # Extract JSON-LD script
+        json_match = re.search(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', resp.text, re.DOTALL | re.IGNORECASE)
         if not json_match:
+            logging.error("No JSON-LD script found")
             return None
 
         data = json.loads(json_match.group(1))
         sources = []
 
-        def extract_urls(obj):
+        # Recursive extract contentUrl
+        def extract_sources(obj):
             if isinstance(obj, dict):
                 if obj.get("@type") == "VideoObject":
                     sources.extend(obj.get("contentUrl", []))
                 for v in obj.values():
-                    extract_urls(v)
+                    extract_sources(v)
             elif isinstance(obj, list):
                 for item in obj:
-                    extract_urls(item)
+                    extract_sources(item)
 
-        extract_urls(data)
+        extract_sources(data)
 
         if not sources:
+            logging.error("No MP4 sources in JSON")
             return None
 
-        # Pilih kualitas tertinggi
-        sources.sort(key=lambda x: int(re.search(r'(\d+)p', x) or re.search(r'/(\d+)/', x) or [0])[0] or 0, reverse=True)
+        # Sort by quality (1080p > 720p > 480p)
+        def get_quality(u):
+            if "1080" in u: return 1080
+            if "720" in u: return 720
+            if "480" in u: return 480
+            return 360
+        sources.sort(key=get_quality, reverse=True)
         best_url = sources[0]
-        logging.info(f"Best quality: {best_url[:120]}...")
+        logging.info(f"Best MP4: {best_url[:150]}... (quality: {get_quality(best_url)}p)")
 
-        # Download dengan yt-dlp + cookies
+        # Download with yt-dlp + cookies
         cmd = f'yt-dlp -o "{video_path}" "{best_url}" --user-agent "{ua}" --referer "{url}" --retries 10'
         if COOKIES_PATH:
             cmd += f' --cookies "{COOKIES_PATH}"'
-
         if run(cmd) == 0 and os.path.getsize(video_path) > 500_000:
+            logging.info("EPORNER SUCCESS with JSON scrape!")
+            return video_path
+
+        # Fallback curl
+        curl_cmd = f'curl -L -k --fail --retry 10 --max-time 900 -o "{video_path}" "{best_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
+        if COOKIES_PATH:
+            curl_cmd += f' --cookie-jar "{COOKIES_PATH}"'
+        if run(curl_cmd) == 0 and os.path.getsize(video_path) > 500_000:
+            logging.info("EPORNER SUCCESS with curl fallback!")
             return video_path
 
     except Exception as e:
-        logging.error(f"Eporner scraper error: {e}")
+        logging.error(f"Scrape error: {e}")
     return None
 
-# ======================================
-# DOWNLOAD UTAMA
-# ======================================
+# Download Video Main
 def download_video(url):
     video_path = os.path.join(JOB_DIR, "video.mp4")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
-    # Eporner → scraper khusus
+    # Eporner → manual scrape
     if "eporner.com" in url.lower():
-        result = download_eporner_direct(url)
-        if result:
-            return result
+        return download_eporner_direct(url)
 
-    # Situs lain → yt-dlp normal + cookies kalau ada
+    # Other sites → yt-dlp with cookies
     base_cmd = f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 10 --fragment-retries 20 --no-check-certificate'
     if COOKIES_PATH:
         base_cmd += f' --cookies "{COOKIES_PATH}"'
@@ -196,7 +197,7 @@ def download_video(url):
     ]
 
     for i, cmd in enumerate(commands, 1):
-        update("downloading", f"Method {i}/4 – yt-dlp")
+        update("downloading", f"yt-dlp method {i}...")
         if run(cmd) == 0:
             file = find_downloaded_video(JOB_DIR)
             if file:
@@ -205,15 +206,21 @@ def download_video(url):
                 return video_path
         time.sleep(3)
 
+    # Final curl fallback
+    curl_cmd = f'curl -L -k --fail --retry 10 --max-time 900 -o "{video_path}" "{url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
+    if COOKIES_PATH:
+        curl_cmd += f' --cookie-jar "{COOKIES_PATH}"'
+    if run(curl_cmd) == 0 and os.path.getsize(video_path) > 300_000:
+        return video_path
+
     return None
 
-# ======================================
-# Extract, Transcribe, Translate, Burn (sama)
-# ======================================
+# Extract Audio
 def extract_audio(video, out):
     cmd = f'{FFMPEG} -y -i "{video}" -vn -ac 1 -ar 16000 -acodec pcm_s16le "{out}" -loglevel error'
     return run(cmd) == 0
 
+# Transcribe
 def transcribe(audio_path, output_srt):
     update("transcribing", "Loading Whisper...")
     try:
@@ -231,6 +238,7 @@ def transcribe(audio_path, output_srt):
         update("failed", "Transcription failed")
         return False
 
+# Translate
 def translate_srt(path, lang):
     subs = pysubs2.load(path)
     try:
@@ -239,20 +247,22 @@ def translate_srt(path, lang):
         for i, line in enumerate(subs):
             if line.text.strip():
                 line.text = tr.translate(line.text.strip())
-    except: pass
+                if i % 15 == 0:
+                    update("translating", f"Translated {i} lines...")
+    except Exception as e:
+        logging.warning(f"Translation failed: {e}")
     out = os.path.join(JOB_DIR, "subs.srt")
     subs.save(out)
     return out
 
+# Burn
 def burn(video, srt, out, size):
     srt_escaped = srt.replace(":", "\\:")
     vf = f"subtitles='{srt_escaped}':force_style='FontSize={size},OutlineColour=&H80000000,BorderStyle=3,BackColour=&H80000000,Alignment=2'"
     cmd = [FFMPEG, "-y", "-i", video, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy", out]
     return run(cmd) == 0
 
-# ======================================
-# MAIN
-# ======================================
+# Main Flow
 update("started", "Worker started")
 
 final_url = src.strip() if is_url else src
@@ -260,10 +270,10 @@ if is_url and not final_url.startswith("http"):
     m = re.search(r'src=[\'"]([^\'"]+)', src)
     final_url = m.group(1) if m else src
 
-update("downloading", "Downloading video...")
+update("downloading", "Starting download...")
 video_file = download_video(final_url)
 if not video_file:
-    update("failed", "Download failed")
+    update("failed", "Download failed after all attempts")
     sys.exit(1)
 
 audio = os.path.join(JOB_DIR, "audio.wav")
