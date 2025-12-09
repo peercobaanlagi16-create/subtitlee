@@ -1,11 +1,11 @@
-# Dockerfile (rekomendasi)
+# Dockerfile (with deno + media deps)
 FROM ubuntu:22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Sistem deps (ffmpeg + build deps + libav dev libs + pkg-config)
+# Sistem deps (ffmpeg + build deps + libav dev libs + pkg-config + curl)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     ca-certificates curl git build-essential pkg-config ffmpeg \
@@ -14,41 +14,39 @@ RUN apt-get update \
     libavfilter-dev libswscale-dev libswresample-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# gunakan python3 pip yang ada
+# buat symlink python/pip (memastikan 'python' dan 'pip' tersedia)
 RUN ln -s /usr/bin/python3 /usr/local/bin/python \
  && ln -s /usr/bin/pip3 /usr/local/bin/pip
 
 WORKDIR /app
 
-# Copy only requirements first (caching)
+# copy hanya requirements dulu (cache)
 COPY requirements.txt .
 
-RUN apt-get update && apt-get install -y curl \
+# upgrade pip & tools lalu install requirements (tanpa paksa av)
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir -r requirements.txt
+
+# coba pasang av dari wheel/source (jika sistem libs cocok). Jika gagal, lanjut (|| true)
+# (ini tidak memblok build jika av build gagal)
+RUN pip install --no-cache-dir av==11.0.0 || true
+
+# pastikan onnxruntime dan faster-whisper (no-deps) terpasang sebagai fallback
+RUN pip install --no-cache-dir onnxruntime==1.15.1 \
+ && pip install --no-cache-dir --no-deps faster-whisper==1.0.0
+
+# ---- INSTAL DENO (untuk yt-dlp EJS support) ----
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip \
  && curl -fsSL https://deno.land/x/install/install.sh | sh \
  && ln -s /root/.deno/bin/deno /usr/local/bin/deno \
  && deno --version
 
-# Upgrade pip & install basic wheel tools
-RUN pip install --upgrade pip setuptools wheel
-
-# Install requirements but DO NOT include `av` in requirements.txt
-# (we'll try to install av explicitly after system libs are available)
-RUN pip install --no-cache-dir -r requirements.txt
-
-# OPTIONAL: try to install av now (should use system libs via pkg-config)
-# If this fails in your environment, comment out the line below.
-RUN pip install --no-cache-dir av==11.0.0 || true
-
-# Install onnxruntime and faster-whisper as fallback (no-deps)
-# faster-whisper may still import av at runtime; installing no-deps avoids pip building av
-RUN pip install --no-cache-dir onnxruntime==1.15.1 \
- && pip install --no-cache-dir --no-deps faster-whisper==1.0.0
-
- 
-# Copy app source
+# copy seluruh source
 COPY . .
+
+# buat folder output (pastikan permission)
+RUN mkdir -p /app/output && chmod 777 /app/output
 
 EXPOSE 8000
 
-# command
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
