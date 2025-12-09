@@ -1,11 +1,11 @@
-# Dockerfile — FINAL FIX EPORNER + BUILD SUCCESS 100% di Koyeb (Des 2025)
+# Dockerfile – FIX EPORNER dengan NIGHTLY yt-dlp (Dec 2025)
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install sistem deps (termasuk curl untuk fallback)
+# Sistem deps (sudah ada curl, ffmpeg, dll)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -35,30 +35,27 @@ RUN ln -s /usr/bin/python3 /usr/local/bin/python && \
 # Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Install yt-dlp TERBARU + curl_cffi (FIX EPORNER IMPERSONATE)
-RUN pip install --no-cache-dir --upgrade \
-    "yt-dlp[curl_cffi]"
+# Install yt-dlp NIGHTLY (FIX EPORNER!)
+RUN wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp && \
+    chmod a+x /usr/local/bin/yt-dlp && \
+    yt-dlp --version  # Konfirmasi nightly
+
+# Install curl_cffi untuk impersonate (opsional, tapi bagus)
+RUN pip install --no-cache-dir curl_cffi
 
 WORKDIR /app
 
-# Copy requirements (caching)
+# Copy requirements
 COPY requirements.txt .
-
-# Install sisa packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Optional av
+# av, onnxruntime, faster-whisper
 RUN pip install --no-cache-dir av==11.0.0 || true
-
-# faster-whisper dll
 RUN pip install --no-cache-dir onnxruntime==1.15.1
 RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
 # Copy source
 COPY . .
-
-# Verify yt-dlp + curl_cffi
-RUN yt-dlp --version && python -c "import curl_cffi; print('curl_cffi ready!')"
 
 EXPOSE 8000
 
