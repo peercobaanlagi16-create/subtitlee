@@ -7,5 +7,5 @@ deep-translator
 numpy<=2.0
 ffmpeg-python
 yt-dlp
-libretranslatepy
+libretranslatepy==2.1.3
 python-multipart
