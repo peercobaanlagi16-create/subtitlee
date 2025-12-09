@@ -95,55 +95,36 @@ def find_downloaded_video(job_dir):
 # MANUAL EPORNER HASH EXTRACTION (FIX BROKEN EXTRACTOR)
 # ======================================
 def manual_eporner_download(url, video_path, ua):
-    update("downloading", "Manual fallback: Extracting Eporner hash from webpage...")
+    update("downloading", "Manual fallback: Extracting Eporner hash from URL...")
     try:
-        headers = {"User-Agent": ua, "Referer": url}
-        resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code != 200:
-            logging.error(f"Failed to fetch webpage: {resp.status_code}")
-            return None
-        webpage = resp.text
-
-        # Regex patterns dari yt-dlp source (multiple untuk 2025 structure)
-        patterns = [
-            r'hash\s*[:=]\s*["\']([a-f0-9]{32})["\']',  # Original hash
-            r'"hash"\s*:\s*"([a-f0-9]{32})"',           # JSON hash
-            r'videoHash["\']?\s*:\s*["\']?([a-f0-9]{32})["\']?',  # Video hash var
-            r'id["\']?\s*:\s*["\']?([a-f0-9]{32})["\']?',          # ID fallback
-            r'([a-f0-9]{32})\s*["\']?video["\']?',      # Reverse match
-        ]
-        hash_match = None
-        for pat in patterns:
-            match = re.search(pat, webpage, re.I)
-            if match:
-                hash_match = match.group(1)
-                logging.info(f"Manual hash extracted: {hash_match}")
-                break
-
+        # Ekstrak hash langsung dari URL (format: /video-{11-char}/title/)
+        hash_match = re.search(r'/video-([a-zA-Z0-9]{10,12})/', url)
         if not hash_match:
-            logging.error("No hash found in webpage")
+            logging.error("No Eporner hash in URL")
             return None
+        vid_hash = hash_match.group(1)
+        logging.info(f"Hash from URL: {vid_hash}")
 
-        # Build direct download URL untuk Eporner (free 720p)
-        direct_url = f"https://www.eporner.com/video-{hash_match}/"
-        logging.info(f"Direct URL built: {direct_url}")
+        # Build direct video page URL (kalau URL embed, tambah full path)
+        direct_url = f"https://www.eporner.com/video-{vid_hash}/"
+        logging.info(f"Direct URL: {direct_url}")
 
-        # Download pakai yt-dlp (atau curl kalau gagal)
-        cmd = f'yt-dlp -o "{video_path}" "{direct_url}" --user-agent "{ua}" --referer "{url}" --retries 5 --no-check-certificate'
+        # Download pakai yt-dlp (dengan flags anti-block)
+        cmd = f'yt-dlp -o "{video_path}" "{direct_url}" --user-agent "{ua}" --referer "{url}" --retries 5 --no-check-certificate --impersonate chrome'
         rc = run(cmd)
         file = find_downloaded_video(JOB_DIR)
         if file:
-            logging.info("SUCCESS with manual Eporner download!")
+            logging.info("SUCCESS with URL-based Eporner download!")
             return file
 
         # Fallback curl ke direct URL
         curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{direct_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
         if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
-            logging.info("SUCCESS with curl fallback!")
+            logging.info("SUCCESS with curl!")
             return video_path
 
     except Exception as e:
-        logging.error(f"Manual Eporner extraction failed: {e}")
+        logging.error(f"Manual Eporner failed: {e}")
     return None
 
 # ======================================
