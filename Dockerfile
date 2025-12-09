@@ -23,6 +23,11 @@ WORKDIR /app
 # Copy only requirements first (caching)
 COPY requirements.txt .
 
+RUN apt-get update && apt-get install -y curl \
+ && curl -fsSL https://deno.land/x/install/install.sh | sh \
+ && ln -s /root/.deno/bin/deno /usr/local/bin/deno \
+ && deno --version
+
 # Upgrade pip & install basic wheel tools
 RUN pip install --upgrade pip setuptools wheel
 
@@ -39,6 +44,7 @@ RUN pip install --no-cache-dir av==11.0.0 || true
 RUN pip install --no-cache-dir onnxruntime==1.15.1 \
  && pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
+ 
 # Copy app source
 COPY . .
 
