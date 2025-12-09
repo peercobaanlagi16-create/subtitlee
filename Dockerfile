@@ -59,6 +59,7 @@ RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0
 
 # Copy source code
 COPY . .
+COPY cookies.txt
 
 # Verify yt-dlp (akan muncul di build log: "2025.12.xx-nightly")
 RUN yt-dlp --version

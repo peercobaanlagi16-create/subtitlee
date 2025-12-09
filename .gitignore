@@ -48,6 +48,8 @@ build/
 Thumbs.db
 desktop.ini
 
+cookies.txt
+
 # Optional: folder model Whisper kalau besar (bisa di-download otomatis)
 models/
 *.bin

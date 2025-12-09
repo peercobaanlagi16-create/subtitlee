@@ -7,7 +7,7 @@ import re
 import time
 import glob
 import logging
-import requests  # ← TAMBAH INI untuk manual scrape
+import requests
 
 import pysubs2
 
@@ -39,13 +39,35 @@ logging.basicConfig(
     ]
 )
 
-# ======================================
-# FFmpeg
-# ======================================
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 
 # ======================================
-# Helper Functions
+# GET COOKIES (dari Secret atau file lokal)
+# ======================================
+def get_cookies_path():
+    secret_cookies = os.getenv("COOKIES_TXT")  # ← nama secret di Koyeb
+    if secret_cookies:
+        path = os.path.join(JOB_DIR, "cookies_from_secret.txt")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(secret_cookies.strip() + "\n")
+            logging.info("Cookies loaded from Koyeb Secret")
+            return path
+        except Exception as e:
+            logging.error(f"Failed to write secret cookies: {e}")
+
+    local_path = os.path.join(APP_DIR, "cookies.txt")
+    if os.path.exists(local_path):
+        logging.info("Cookies loaded from local cookies.txt")
+        return local_path
+
+    logging.warning("No cookies found! Age-gated sites may fail")
+    return None
+
+COOKIES_PATH = get_cookies_path()
+
+# ======================================
+# Helper
 # ======================================
 def update(status, log_msg=""):
     data = {"status": status, "log": log_msg}
@@ -67,247 +89,198 @@ def run(cmd):
         cwd=APP_DIR,
     )
     if p.stdout:
-        logging.info(p.stdout[-3000:])
+        logging.info(p.stdout[-2000:])
     if p.stderr:
-        logging.error(p.stderr[-3000:])
+        logging.error(p.stderr[-2000:])
     return p.returncode
 
-def extract_src(embed):
-    m = re.search(r'src=[\'"]([^\'"]+)', embed)
-    return m.group(1) if m else embed
-
 def find_downloaded_video(job_dir):
-    patterns = [
-        os.path.join(job_dir, "video.*"),
-        os.path.join(job_dir, "*.*")
-    ]
-    for pattern in patterns:
+    for pattern in [os.path.join(job_dir, "video.*"), os.path.join(job_dir, "*.*")]:
         for f in glob.glob(pattern):
-            if any(ext in f for ext in [".part", ".temp", ".ytdl", ".frag"]):
+            if any(x in f for x in [".part", ".temp", ".ytdl", ".frag"]):
                 continue
             try:
-                if os.path.getsize(f) > 200_000:  # >200KB
+                if os.path.getsize(f) > 300_000:
                     return f
             except: pass
     return None
 
 # ======================================
-# MANUAL EPORNER HASH EXTRACTION (FIX BROKEN EXTRACTOR)
+# EPORNER DIRECT MP4 SCRAPER (2025) – WITH COOKIES
 # ======================================
-def manual_eporner_download(url, video_path, ua):
-    update("downloading", "Manual fallback: Extracting Eporner hash from URL...")
+def download_eporner_direct(url):
+    video_path = os.path.join(JOB_DIR, "video.mp4")
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+
+    update("downloading", "Scraping Eporner MP4 sources...")
     try:
-        # Ekstrak hash langsung dari URL (format: /video-{11-char}/title/)
-        hash_match = re.search(r'/video-([a-zA-Z0-9]{10,12})/', url)
-        if not hash_match:
-            logging.error("No Eporner hash in URL")
+        headers = {"User-Agent": ua, "Referer": url}
+        session = requests.Session()
+        if COOKIES_PATH:
+            # Load Netscape format cookies
+            with open(COOKIES_PATH) as f:
+                for line in f:
+                    if line.strip() and not line.startswith('#'):
+                        parts = line.strip().split('\t')
+                        if len(parts) >= 7:
+                            name, value = parts[-2], parts[-1]
+                            session.cookies.set(name, value, domain=parts[0])
+
+        resp = session.get(url, headers=headers, timeout=30)
+        if resp.status_code != 200:
             return None
-        vid_hash = hash_match.group(1)
-        logging.info(f"Hash from URL: {vid_hash}")
 
-        # Build direct video page URL (kalau URL embed, tambah full path)
-        direct_url = f"https://www.eporner.com/video-{vid_hash}/"
-        logging.info(f"Direct URL: {direct_url}")
+        # Cari JSON-LD
+        json_match = re.search(r'<script type=["\']application/ld\+json["\']>(.*?)</script>', resp.text, re.DOTALL)
+        if not json_match:
+            return None
 
-        # Download pakai yt-dlp (dengan flags anti-block)
-        cmd = f'yt-dlp -o "{video_path}" "{direct_url}" --user-agent "{ua}" --referer "{url}" --retries 5 --no-check-certificate --impersonate chrome'
-        rc = run(cmd)
-        file = find_downloaded_video(JOB_DIR)
-        if file:
-            logging.info("SUCCESS with URL-based Eporner download!")
-            return file
+        data = json.loads(json_match.group(1))
+        sources = []
 
-        # Fallback curl ke direct URL
-        curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{direct_url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
-        if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
-            logging.info("SUCCESS with curl!")
+        def extract_urls(obj):
+            if isinstance(obj, dict):
+                if obj.get("@type") == "VideoObject":
+                    sources.extend(obj.get("contentUrl", []))
+                for v in obj.values():
+                    extract_urls(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    extract_urls(item)
+
+        extract_urls(data)
+
+        if not sources:
+            return None
+
+        # Pilih kualitas tertinggi
+        sources.sort(key=lambda x: int(re.search(r'(\d+)p', x) or re.search(r'/(\d+)/', x) or [0])[0] or 0, reverse=True)
+        best_url = sources[0]
+        logging.info(f"Best quality: {best_url[:120]}...")
+
+        # Download dengan yt-dlp + cookies
+        cmd = f'yt-dlp -o "{video_path}" "{best_url}" --user-agent "{ua}" --referer "{url}" --retries 10'
+        if COOKIES_PATH:
+            cmd += f' --cookies "{COOKIES_PATH}"'
+
+        if run(cmd) == 0 and os.path.getsize(video_path) > 500_000:
             return video_path
 
     except Exception as e:
-        logging.error(f"Manual Eporner failed: {e}")
+        logging.error(f"Eporner scraper error: {e}")
     return None
 
 # ======================================
-# DOWNLOAD VIDEO – Dengan Manual Fallback untuk Eporner
+# DOWNLOAD UTAMA
 # ======================================
 def download_video(url):
     video_path = os.path.join(JOB_DIR, "video.mp4")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
-    # DETECT EPORNER & GUNAKAN MANUAL FALLBACK PERTAMA
-    if "eporner.com" in url:
-        manual_file = manual_eporner_download(url, video_path, ua)
-        if manual_file:
-            return manual_file
+    # Eporner → scraper khusus
+    if "eporner.com" in url.lower():
+        result = download_eporner_direct(url)
+        if result:
+            return result
 
-    # Kalau bukan Eporner, lanjut ke yt-dlp methods
+    # Situs lain → yt-dlp normal + cookies kalau ada
+    base_cmd = f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 10 --fragment-retries 20 --no-check-certificate'
+    if COOKIES_PATH:
+        base_cmd += f' --cookies "{COOKIES_PATH}"'
+
     commands = [
-        # 1. Impersonate + full flags
-        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5 --fragment-retries 15 --no-check-certificate --concurrent-fragments 8',
-
-        # 2. Basic impersonate
-        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --user-agent "{ua}" --referer "{url}" --retries 5',
-
-        # 3. Best format
-        f'yt-dlp -o "{video_path}" "{url}" -f best --impersonate chrome --user-agent "{ua}" --referer "{url}"',
-
-        # 4. Headers manual
-        f'yt-dlp -o "{video_path}" "{url}" --impersonate chrome --add-header "Referer:{url}" --add-header "User-Agent:{ua}"',
-
-        # 5. Quiet
-        f'yt-dlp -o "{video_path}" "{url}" -q --no-warnings --impersonate chrome --user-agent "{ua}" --referer "{url}"',
+        base_cmd + " --concurrent-fragments 8",
+        base_cmd,
+        base_cmd.replace("--impersonate chrome", ""),
+        f'yt-dlp -o "{video_path}" "{url}" -f best' + (f' --cookies "{COOKIES_PATH}"' if COOKIES_PATH else ""),
     ]
 
-    for i, cmd_str in enumerate(commands, 1):
-        update("downloading", f"Attempt {i}/{len(commands)} – yt-dlp method...")
-        logging.info(f"Trying yt-dlp method {i}...")
-        rc = run(cmd_str)
-
-        file = find_downloaded_video(JOB_DIR)
-        if file:
-            logging.info(f"SUCCESS with yt-dlp! Video: {file}")
-            if file != video_path:
-                os.rename(file, video_path)
-            return video_path
+    for i, cmd in enumerate(commands, 1):
+        update("downloading", f"Method {i}/4 – yt-dlp")
+        if run(cmd) == 0:
+            file = find_downloaded_video(JOB_DIR)
+            if file:
+                if file != video_path:
+                    os.rename(file, video_path)
+                return video_path
         time.sleep(3)
-
-    # Curl fallback (untuk direct MP4 links)
-    update("downloading", "Final fallback: curl direct...")
-    curl_cmd = f'curl -L -k --fail --retry 5 --max-time 600 -o "{video_path}" "{url}" -H "User-Agent: {ua}" -H "Referer: {url}"'
-    if run(curl_cmd) == 0 and os.path.getsize(video_path) > 200_000:
-        return video_path
 
     return None
 
 # ======================================
-# Extract Audio
+# Extract, Transcribe, Translate, Burn (sama)
 # ======================================
 def extract_audio(video, out):
     cmd = f'{FFMPEG} -y -i "{video}" -vn -ac 1 -ar 16000 -acodec pcm_s16le "{out}" -loglevel error'
     return run(cmd) == 0
 
-# ======================================
-# Transcribe (faster-whisper lazy import)
-# ======================================
 def transcribe(audio_path, output_srt):
-    update("transcribing", "Loading Whisper model (small)...")
+    update("transcribing", "Loading Whisper...")
     try:
         from faster_whisper import WhisperModel
-    except Exception as e:
-        logging.error("faster_whisper import failed: " + str(e))
-        update("failed", "faster_whisper not available")
-        return False
-
-    try:
         model = WhisperModel("small", device="cpu", compute_type="int8")
-    except Exception as e:
-        logging.error("Model load failed: " + str(e))
-        update("failed", "Whisper model failed to load")
-        return False
-
-    update("transcribing", "Transcribing audio...")
-    try:
         segments, _ = model.transcribe(audio_path, beam_size=5, vad_filter=True)
+        with open(output_srt, "w", encoding="utf-8") as f:
+            for i, seg in enumerate(segments, 1):
+                s, e = seg.start, seg.end
+                f.write(f"{i}\n{int(s//3600):02d}:{int(s%3600//60):02d}:{int(s%60):02d},{int(s*1000%1000):03d} --> ")
+                f.write(f"{int(e//3600):02d}:{int(e%3600//60):02d}:{int(e%60):02d},{int(e*1000%1000):03d}\n{seg.text.strip()}\n\n")
+        return True
     except Exception as e:
-        logging.error("Transcription error: " + str(e))
+        logging.error(f"Whisper error: {e}")
         update("failed", "Transcription failed")
         return False
 
-    with open(output_srt, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segments, 1):
-            start = seg.start
-            end = seg.end
-            text = seg.text.strip()
-            f.write(f"{i}\n")
-            f.write(f"{int(start//3600):02d}:{int(start%3600//60):02d}:{int(start%60):02d},{int(start*1000%1000):03d} --> ")
-            f.write(f"{int(end//3600):02d}:{int(end%3600//60):02d}:{int(end%60):02d},{int(end*1000%1000):03d}\n")
-            f.write(text + "\n\n")
-    return True
-
-# ======================================
-# Translate SRT
-# ======================================
-def translate_srt(path, target_lang):
+def translate_srt(path, lang):
     subs = pysubs2.load(path)
-    count = 0
     try:
         from deep_translator import GoogleTranslator
-        translator = GoogleTranslator(source='auto', target=target_lang)
-        for line in subs:
+        tr = GoogleTranslator(source='auto', target=lang)
+        for i, line in enumerate(subs):
             if line.text.strip():
-                try:
-                    line.text = translator.translate(line.text.strip())
-                    count += 1
-                    if count % 15 == 0:
-                        update("translating", f"Translated {count} lines...")
-                except:
-                    pass
-    except Exception as e:
-        logging.warning("Translation failed, keeping original: " + str(e))
-
-    out_path = os.path.join(JOB_DIR, "subs.srt")
-    subs.save(out_path)
-    return out_path
-
-# ======================================
-# Burn Subtitle
-# ======================================
-def escape(path):
-    return path.replace("\\", "/").replace(":", "\\:")
+                line.text = tr.translate(line.text.strip())
+    except: pass
+    out = os.path.join(JOB_DIR, "subs.srt")
+    subs.save(out)
+    return out
 
 def burn(video, srt, out, size):
-    vf = f"subtitles='{escape(srt)}':force_style='FontSize={size},OutlineColour=&H80000000,BorderStyle=3,BackColour=&H80000000,Alignment=2'"
-    cmd = [
-        FFMPEG, "-y", "-i", video,
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "copy",
-        out
-    ]
+    srt_escaped = srt.replace(":", "\\:")
+    vf = f"subtitles='{srt_escaped}':force_style='FontSize={size},OutlineColour=&H80000000,BorderStyle=3,BackColour=&H80000000,Alignment=2'"
+    cmd = [FFMPEG, "-y", "-i", video, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy", out]
     return run(cmd) == 0
 
 # ======================================
-# MAIN FLOW
+# MAIN
 # ======================================
 update("started", "Worker started")
 
-# Determine final URL
-if is_url:
-    raw_url = src.strip()
-    final_url = raw_url if raw_url.startswith("http") else extract_src(raw_url)
-else:
-    final_url = src
+final_url = src.strip() if is_url else src
+if is_url and not final_url.startswith("http"):
+    m = re.search(r'src=[\'"]([^\'"]+)', src)
+    final_url = m.group(1) if m else src
 
-# Download
-if is_url:
-    update("downloading", "Starting video download...")
-    video_file = download_video(final_url)
-    if not video_file:
-        update("failed", "Failed to download video after all attempts")
-        sys.exit(1)
-else:
-    video_file = src
+update("downloading", "Downloading video...")
+video_file = download_video(final_url)
+if not video_file:
+    update("failed", "Download failed")
+    sys.exit(1)
 
-# Extract audio
-audio_file = os.path.join(JOB_DIR, "audio.wav")
-if not extract_audio(video_file, audio_file):
+audio = os.path.join(JOB_DIR, "audio.wav")
+if not extract_audio(video_file, audio):
     update("failed", "Audio extraction failed")
     sys.exit(1)
 
-# Transcribe
 raw_srt = os.path.join(JOB_DIR, "raw.srt")
-if not transcribe(audio_file, raw_srt):
+if not transcribe(audio, raw_srt):
     sys.exit(1)
 
-# Translate
-update("translating", "Translating subtitles...")
+update("translating", "Translating...")
 final_srt = translate_srt(raw_srt, target)
 
-# Burn
-update("burning", "Burning subtitles into video...")
-output_video = os.path.join(JOB_DIR, "output.mp4")
-if burn(video_file, final_srt, output_video, font_size):
-    update("done", "Video with subtitles ready!")
+update("burning", "Burning subtitles...")
+out_video = os.path.join(JOB_DIR, "output.mp4")
+if burn(video_file, final_srt, out_video, font_size):
+    update("done", "Success! Video ready")
 else:
-    update("failed", "Failed to burn subtitles")
-    sys.exit(1)
+    update("failed", "Burn failed")
