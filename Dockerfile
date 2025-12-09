@@ -36,7 +36,10 @@ RUN ln -s /usr/bin/python3 /usr/local/bin/python && \
 RUN pip install --upgrade pip setuptools wheel
 
 # Install yt-dlp versi terbaru (WAJIB selalu fresh!)
-RUN pip install --no-cache-dir --upgrade yt-dlp
+RUN pip install --no-cache-dir --upgrade --force-reinstall \
+    "yt-dlp[default]" \
+    "git+https://github.com/coletdjnz/yt-dlp-epr.git@main" \
+    "git+https://github.com/yt-dlp/yt-dlp-porn-plugins.git"
 
 WORKDIR /app
 
