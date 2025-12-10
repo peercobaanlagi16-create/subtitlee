@@ -587,69 +587,81 @@ def transcribe_audio(audio_path, srt_path):
         update("failed", f"Transcribe error: {str(e)[:100]}")
         return False
 
-# ======================================
-# FIX 1: Translate Subtitle (anti rate limit + fallback)
-# ======================================
-def translate_subtitles(srt_path, target_lang):
-    """Translate SRT dengan fallback kalau Google kena limit"""
-    logger.info(f"Translating subtitles to {target_lang}...")
+def translate_subtitles(srt_path, target_lang="id"):
+    """Terjemah subtitle ke Indonesia PAKAI LIBRETRANSLATE (NO LIMIT!)"""
+    logger.info(f"Translating subtitles to Indonesian (id)...")
     
-    try:
-        from deep_translator import GoogleTranslator
+    # Daftar server LibreTranslate (fallback otomatis kalau satu down)
+    servers = [
+        "https://libretranslate.de",
+        "https://translate.terraprint.co",
+        "https://translate.argosopentech.com",
+        "https://libretranslate.com"  # backup
+    ]
+    
+    subs = pysubs2.load(srt_path)
+    total = len(subs)
+    success_count = 0
+    
+    for i, line in enumerate(subs):
+        if not line.text.strip():
+            continue
+            
+        text = line.text.strip()
+        translated = None
         
-        subs = pysubs2.load(srt_path)
-        total = len(subs)
-        translated = 0
+        # Coba setiap server sampai berhasil
+        for server in servers:
+            try:
+                import requests
+                response = requests.post(
+                    f"{server}/translate",
+                    json={
+                        "q": text,
+                        "source": "auto",
+                        "target": target_lang,
+                        "format": "text"
+                    },
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    translated = response.json().get("translatedText", text)
+                    break
+            except:
+                continue  # coba server berikutnya
         
-        translator = GoogleTranslator(source='auto', target=target_lang)
+        # Kalau semua gagal → pakai asli
+        if translated and translated.strip():
+            line.text = translated.strip()
+            success_count += 1
+        else:
+            line.text = text  # tetap asli kalau gagal
         
-        for i, line in enumerate(subs):
-            if line.text.strip():
-                try:
-                    # Tambah delay kecil biar tidak kena limit
-                    time.sleep(0.3)
-                    line.text = translator.translate(line.text.strip())
-                    translated += 1
-                    if translated % 10 == 0:
-                        logger.info(f"Translated {translated}/{total} lines...")
-                except Exception as e:
-                    # Kalau gagal satu baris, skip aja
-                    logger.warning(f"Line {i+1} translation failed: {e}")
-                    continue
+        # Progress log
+        if (i + 1) % 10 == 0 or i == total - 1:
+            logger.info(f"Translated {success_count}/{total} lines ({(success_count/total*100):.1f}%)")
         
-        out_path = os.path.join(JOB_DIR, "subs_translated.srt")
-        subs.save(out_path)
-        logger.info(f"Translation SUCCESS! {translated}/{total} lines")
-        return out_path
-        
-    except Exception as e:
-        logger.error(f"Translation failed (Google blocked?): {e}")
-        # Fallback: pakai SRT asli (tanpa terjemahan)
-        logger.info("Fallback: using original subtitles (no translation)")
-        return srt_path  # Kembaliin SRT asli biar burn tetap jalan
+        time.sleep(0.1)  # sopan ke server gratis
+    
+    # Simpan
+    out_path = os.path.join(JOB_DIR, "subs_translated.srt")
+    subs.save(out_path)
+    
+    logger.info(f"TRANSLATION SUCCESS: {success_count}/{total} lines ke Bahasa Indonesia")
+    return out_path
 
 
-# ======================================
-# FIX 2: Burn Subtitle (escape path + fix style)
-# ======================================
 def burn_subtitles(video_path, srt_path, output_path, font_size):
-    """Burn subtitle dengan path yang aman"""
+    """Burn subtitle dengan path 100% aman"""
     logger.info(f"Burning subtitles (size {font_size})...")
     
-    # Escape path dengan benar (ganti ' jadi '\'', dan tambah kutip)
-    srt_escaped = srt_path.replace("'", "'\\''")
+    # ESCAPE PATH YANG BENAR (ini yang bikin ffmpeg gagal sebelumnya)
+    srt_escaped = srt_path.replace("'", "'\\''").replace(" ", "\\ ").replace("(", "\\(").replace(")", "\\)")
     
-    style = (
-        f"FontSize={font_size},"
-        f"PrimaryColour=&H00FFFFFF,"
-        f"OutlineColour=&H80000000,"
-        f"BackColour=&H80000000,"
-        f"BorderStyle=3,"
-        f"Alignment=2,"
-        f"MarginV=40,"
-        f"FontName=Arial"
-    )
+    # Style sederhana tapi pasti jalan
+    style = f"FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BackColour=&H80000000,BorderStyle=3,Alignment=2,MarginV=40"
     
+    # Command dengan kutip ganda + escape
     cmd = [
         FFMPEG, "-y",
         "-i", video_path,
@@ -663,23 +675,20 @@ def burn_subtitles(video_path, srt_path, output_path, font_size):
     ]
     
     result = run_command(cmd, timeout=600)
+    
     if result == 0 and os.path.exists(output_path):
         size_mb = os.path.getsize(output_path) / (1024*1024)
-        logger.info(f"SUCCESS: Video with subtitles ready! ({size_mb:.1f} MB)")
+        logger.info(f"SUCCESS: Video dengan subtitle siap! ({size_mb:.1f} MB)")
         return True
-    else:
-        logger.error("Burn failed — trying fallback without style...")
-        # Fallback: tanpa force_style (kalau style error)
-        cmd_simple = [
-            FFMPEG, "-y", "-i", video_path,
-            "-vf", f"subtitles='{srt_escaped}'",
-            "-c:v", "libx264", "-crf", "23", "-c:a", "copy",
-            output_path
-        ]
-        if run_command(cmd_simple) == 0:
-            logger.info("SUCCESS: Burned with simple subtitles")
-            return True
-        return False
+    
+    # Fallback tanpa style kalau masih error
+    logger.warning("Gagal dengan style → coba tanpa style...")
+    cmd_simple = f'{FFMPEG} -y -i "{video_path}" -vf "subtitles=\'{srt_escaped}\'" -c:v libx264 -crf 23 -c:a copy "{output_path}"'
+    if run_command(cmd_simple) == 0 and os.path.exists(output_path):
+        logger.info("SUCCESS: Subtitle ter-burn (tanpa style)")
+        return True
+    
+    return False
 
 # ======================================
 # MAIN PROCESS
