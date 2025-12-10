@@ -587,82 +587,99 @@ def transcribe_audio(audio_path, srt_path):
         update("failed", f"Transcribe error: {str(e)[:100]}")
         return False
 
+# ======================================
+# FIX 1: Translate Subtitle (anti rate limit + fallback)
+# ======================================
 def translate_subtitles(srt_path, target_lang):
-    """Translate subtitles ke bahasa target"""
-    logger.info(f"Translating subtitles to {target_lang}")
+    """Translate SRT dengan fallback kalau Google kena limit"""
+    logger.info(f"Translating subtitles to {target_lang}...")
     
     try:
-        subs = pysubs2.load(srt_path)
-        
         from deep_translator import GoogleTranslator
+        
+        subs = pysubs2.load(srt_path)
+        total = len(subs)
+        translated = 0
+        
         translator = GoogleTranslator(source='auto', target=target_lang)
         
-        total = len(subs)
         for i, line in enumerate(subs):
             if line.text.strip():
                 try:
-                    translated = translator.translate(line.text.strip())
-                    line.text = translated
-                    
-                    if (i + 1) % 20 == 0:
-                        logger.info(f"Translated {i+1}/{total} lines")
+                    # Tambah delay kecil biar tidak kena limit
+                    time.sleep(0.3)
+                    line.text = translator.translate(line.text.strip())
+                    translated += 1
+                    if translated % 10 == 0:
+                        logger.info(f"Translated {translated}/{total} lines...")
                 except Exception as e:
-                    logger.warning(f"Translation error line {i+1}: {e}")
+                    # Kalau gagal satu baris, skip aja
+                    logger.warning(f"Line {i+1} translation failed: {e}")
                     continue
         
-        translated_path = os.path.join(JOB_DIR, "subs_translated.srt")
-        subs.save(translated_path)
-        
-        logger.info(f"Translation completed: {translated_path}")
-        return translated_path
+        out_path = os.path.join(JOB_DIR, "subs_translated.srt")
+        subs.save(out_path)
+        logger.info(f"Translation SUCCESS! {translated}/{total} lines")
+        return out_path
         
     except Exception as e:
-        logger.error(f"Translation failed: {e}")
-        # Return original if translation fails
-        return srt_path
+        logger.error(f"Translation failed (Google blocked?): {e}")
+        # Fallback: pakai SRT asli (tanpa terjemahan)
+        logger.info("Fallback: using original subtitles (no translation)")
+        return srt_path  # Kembaliin SRT asli biar burn tetap jalan
 
+
+# ======================================
+# FIX 2: Burn Subtitle (escape path + fix style)
+# ======================================
 def burn_subtitles(video_path, srt_path, output_path, font_size):
-    """Burn subtitles ke video"""
-    logger.info(f"Burning subtitles with size {font_size}")
+    """Burn subtitle dengan path yang aman"""
+    logger.info(f"Burning subtitles (size {font_size})...")
     
-    # Escape path untuk filter
+    # Escape path dengan benar (ganti ' jadi '\'', dan tambah kutip)
     srt_escaped = srt_path.replace("'", "'\\''")
     
-    # Style untuk subtitles
     style = (
         f"FontSize={font_size},"
-        f"OutlineColour=&H80000000,"
-        f"BorderStyle=3,"
-        f"BackColour=&H80000000,"
-        f"Alignment=2,"
-        f"MarginV=30,"
-        f"FontName=Arial,"
         f"PrimaryColour=&H00FFFFFF,"
-        f"Outline=1,"
-        f"Shadow=0"
+        f"OutlineColour=&H80000000,"
+        f"BackColour=&H80000000,"
+        f"BorderStyle=3,"
+        f"Alignment=2,"
+        f"MarginV=40,"
+        f"FontName=Arial"
     )
     
     cmd = [
-        FFMPEG, '-y',
-        '-i', video_path,
-        '-vf', f"subtitles='{srt_escaped}':force_style='{style}'",
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '23',
-        '-c:a', 'copy',
-        '-movflags', '+faststart',
-        '-loglevel', 'error',
-        '-hide_banner',
+        FFMPEG, "-y",
+        "-i", video_path,
+        "-vf", f"subtitles='{srt_escaped}':force_style='{style}'",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
         output_path
     ]
     
-    success = run_command(cmd, timeout=600) == 0
-    
-    if success and os.path.exists(output_path):
-        size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        logger.info(f"✓ Subtitles burned successfully! Output: {size_mb:.2f} MB")
-    
-    return success
+    result = run_command(cmd, timeout=600)
+    if result == 0 and os.path.exists(output_path):
+        size_mb = os.path.getsize(output_path) / (1024*1024)
+        logger.info(f"SUCCESS: Video with subtitles ready! ({size_mb:.1f} MB)")
+        return True
+    else:
+        logger.error("Burn failed — trying fallback without style...")
+        # Fallback: tanpa force_style (kalau style error)
+        cmd_simple = [
+            FFMPEG, "-y", "-i", video_path,
+            "-vf", f"subtitles='{srt_escaped}'",
+            "-c:v", "libx264", "-crf", "23", "-c:a", "copy",
+            output_path
+        ]
+        if run_command(cmd_simple) == 0:
+            logger.info("SUCCESS: Burned with simple subtitles")
+            return True
+        return False
 
 # ======================================
 # MAIN PROCESS
