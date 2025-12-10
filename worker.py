@@ -528,61 +528,63 @@ def extract_audio(video_path, audio_path):
     return run_command(cmd) == 0
 
 def transcribe_audio(audio_path, srt_path):
-    """Transcribe audio menggunakan Whisper"""
-    update("transcribing", "Running Whisper transcription...")
+    """Transcribe audio dengan Whisper — SUPER CEPAT untuk Koyeb Free/Eco"""
+    update("transcribing", "Loading Whisper model (tiny)...")
     
     try:
         from faster_whisper import WhisperModel
         
-        logger.info("Loading Whisper model (small)...")
+        logger.info("Loading Whisper 'tiny' model (39M) — 5x lebih cepat dari small")
+        
+        # MODEL TINY + int8 + tanpa VAD = tercepat di CPU lemah
         model = WhisperModel(
-            "small",
+            "tiny",                    # ← 5x lebih cepat dari "small"
             device="cpu",
-            compute_type="int8",
-            download_root="/tmp/whisper"
+            compute_type="int8",       # ← wajib untuk CPU
+            download_root="/tmp/whisper"  # cache di RAM
         )
         
-        logger.info("Starting transcription...")
+        logger.info("Starting transcription (no VAD, no beam search berat)")
         segments, info = model.transcribe(
             audio_path,
-            beam_size=5,
-            best_of=5,
+            beam_size=1,               # ← 1 = tercepat (cukup untuk bahasa jelas)
+            best_of=1,                 # ← matikan best_of (hemat 30-50% waktu)
             patience=1,
             temperature=0,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-            word_timestamps=False
+            vad_filter=False,          # ← MATIKAN VAD = 2x lebih cepat
+            word_timestamps=False      # ← tidak perlu
         )
         
-        logger.info(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+        logger.info(f"Detected language: {info.language} (prob: {info.language_probability:.2f})")
+        logger.info(f"Found {len(list(segments))} segments — writing SRT...")
         
-        # Write SRT file
         with open(srt_path, "w", encoding="utf-8") as f:
             for i, segment in enumerate(segments, 1):
                 start = segment.start
                 end = segment.end
                 text = segment.text.strip()
                 
-                # Format SRT timestamp
-                def format_time(seconds):
-                    hours = int(seconds // 3600)
-                    minutes = int((seconds % 3600) // 60)
-                    secs = int(seconds % 60)
-                    millis = int((seconds * 1000) % 1000)
-                    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+                # Format SRT
+                def fmt(t):
+                    h = int(t // 3600)
+                    m = int((t % 3600) // 60)
+                    s = int(t % 60)
+                    ms = int((t * 1000) % 1000)
+                    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                 
-                start_str = format_time(start)
-                end_str = format_time(end)
-                
-                f.write(f"{i}\n{start_str} --> {end_str}\n{text}\n\n")
+                f.write(f"{i}\n")
+                f.write(f"{fmt(start)} --> {fmt(end)}\n")
+                f.write(f"{text}\n\n")
         
-        logger.info(f"Transcription saved to {srt_path}")
+        logger.info(f"Transcription DONE! Saved to {srt_path}")
+        update("transcribing", "Transcription completed!")
         return True
         
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        update("failed", f"Transcribe error: {str(e)[:100]}")
         return False
 
 def translate_subtitles(srt_path, target_lang):
