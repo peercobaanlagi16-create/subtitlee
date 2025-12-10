@@ -57,6 +57,7 @@ RUN pip install --no-cache-dir \
 # Install faster-whisper (terpisah karena dependencies khusus)
 RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0 && \
     pip install --no-cache-dir ctranslate2==4.4.0
+RUN pip install --no-cache-dir tokenizers==0.15.2
 
 # Verifikasi install
 RUN python --version && \
