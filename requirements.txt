@@ -4,7 +4,7 @@ python-dotenv
 requests
 pysubs2
 deep-translator
-numpy<2
+numpy<=2.0
 ffmpeg-python
 yt-dlp
 libretranslatepy==2.1.3
