@@ -52,7 +52,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install paket khusus untuk whisper dan scraping
 RUN pip install --no-cache-dir \
     av==11.0.0 \
-    onnxruntime-cpu==1.16.3 \
     beautifulsoup4==4.12.3 \
     lxml==5.3.0 \
     fake-useragent==1.5.0 \

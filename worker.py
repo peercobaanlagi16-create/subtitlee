@@ -4,12 +4,8 @@ import sys
 import json
 import subprocess
 import re
-import time
-import glob
 import logging
 import requests
-import random
-from http.cookies import SimpleCookie
 import pysubs2
 
 # ======================================
@@ -25,7 +21,6 @@ APP_DIR = os.path.dirname(__file__)
 JOB_DIR = os.path.join(APP_DIR, "output", job_id)
 STATUS = os.path.join(JOB_DIR, "status.json")
 LOG_FILE = os.path.join(JOB_DIR, "worker.log")
-COOKIES_TEMP = os.path.join(JOB_DIR, "cookies_temp.txt")
 os.makedirs(JOB_DIR, exist_ok=True)
 
 # ======================================
@@ -42,27 +37,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
-
-# ======================================
-# Cookies
-# ======================================
-def setup_cookies():
-    secret = os.getenv("COOKIES_TXT", "").strip()
-    if not secret or len(secret) < 50:
-        logger.warning("COOKIES_TXT tidak valid")
-        return None
-
-    with open(COOKIES_TEMP, "w", encoding="utf-8") as f:
-        if not secret.startswith("# Netscape"):
-            f.write("# Netscape HTTP Cookie File\n")
-            f.write("# https://curl.haxx.se/rfc/cookie_spec.html\n")
-            f.write("# Generated file\n\n")
-        f.write(secret)
-
-    logger.info("✓ Cookies siap digunakan")
-    return COOKIES_TEMP
-
-COOKIES_PATH = setup_cookies()
 
 # ======================================
 # Helper
@@ -102,10 +76,10 @@ def extract_audio(video, audio):
     ])
 
 # ======================================
-# 🔥 FAST + SAFE TRANSCRIBE (OPTIMIZED)
+# 🔥 FASTEST TRANSCRIBE (NO VAD)
 # ======================================
 def transcribe_audio(audio_path, srt_path):
-    update("transcribing", "Whisper fast transcription...")
+    update("transcribing", "Whisper fast transcription (no VAD)...")
 
     try:
         from faster_whisper import WhisperModel
@@ -121,11 +95,10 @@ def transcribe_audio(audio_path, srt_path):
 
         segments, info = model.transcribe(
             audio_path,
-            beam_size=1,                 # 🚀 SPEED BOOST
-            best_of=1,                   # 🚀 SPEED BOOST
+            beam_size=1,
+            best_of=1,
             temperature=0,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 800}
+            vad_filter=False   # 🔥 VAD OFF → NO onnxruntime
         )
 
         def ts(x):
@@ -149,7 +122,7 @@ def transcribe_audio(audio_path, srt_path):
         if os.path.getsize(srt_path) < 50:
             raise RuntimeError("SRT kosong")
 
-        logger.info("✓ Transcription selesai (FAST)")
+        logger.info("✓ Transcription selesai (ULTRA FAST)")
         return True
 
     except Exception as e:
