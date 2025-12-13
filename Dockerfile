@@ -1,6 +1,12 @@
 # Dockerfile — FINAL & AMAN 100% (NO cookies.txt di repo!)
 FROM ubuntu:22.04
 
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1
+
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -46,7 +52,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install paket khusus untuk whisper dan scraping
 RUN pip install --no-cache-dir \
     av==11.0.0 \
-    onnxruntime==1.15.1 \
+    onnxruntime-cpu==1.16.3 \
     beautifulsoup4==4.12.3 \
     lxml==5.3.0 \
     fake-useragent==1.5.0 \
@@ -55,7 +61,7 @@ RUN pip install --no-cache-dir \
     undetected-chromedriver==3.5.5
 
 # Install faster-whisper (terpisah karena dependencies khusus)
-RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.0 && \
+RUN pip install --no-cache-dir --no-deps faster-whisper==1.0.3 && \
     pip install --no-cache-dir ctranslate2==4.4.0
 RUN pip install --no-cache-dir tokenizers==0.15.2
 
